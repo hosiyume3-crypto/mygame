@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Network Flora - Interactive Growth</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #050505;
+            color: #888;
+            font-family: 'Courier New', Courier, monospace;
+            user-select: none;
+        }
+        canvas { display: block; }
+        #ui-layer {
+            position: absolute;
+            top: 20px; left: 20px;
+            pointer-events: none;
+            background: rgba(0, 0, 0, 0.6);
+            padding: 15px;
+            border-left: 2px solid #ff0055;
+            backdrop-filter: blur(4px);
+            border-radius: 0 8px 8px 0;
+        }
+        h1 {
+            margin: 0 0 5px 0;
+            font-size: 14px;
+            letter-spacing: 2px;
+            color: #fff;
+            text-shadow: 0 0 10px rgba(255, 255, 255, 0.5);
+        }
+        .stat { font-size: 10px; color: #aaa; margin-bottom: 2px; }
+        .controls {
+            position: absolute; bottom: 20px; left: 20px;
+            font-size: 10px; color: #555;
+            letter-spacing: 1px;
+            background: rgba(0,0,0,0.3);
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>NETWORK FLORA // INTERACTIVE_GROWTH</h1>
+        <div class="stat" id="node-count">Nodes: 0 / 1500</div>
+        <div class="stat" id="zoom-level">Zoom: 100%</div>
+        <div class="stat">Mode: STIMULATION_ONLY</div>
+    </div>
+
+    <div class="controls">
+        [R-DRAG] PAN | [WHEEL] ZOOM | [L-CLICK] STIMULATE | [HOVER] INTERACT
+    </div>
+
+    <script>
+        // --- CONFIGURATION ---
+        const CONFIG = {
+            maxNodes: 1500,
+            growthCost: 6,
+            
+            pulseSpeed: 1.5, 
+            decayRate: 0.15,
+            
+            baseGrowthInterval: 60,
+            rhythm: 90,
+
+            flowerChance: 0.015, 
+            flowerLifeBase: 600, 
+
+            crossLinkChance: 0.08,
+            crossLinkRange: 120,
+
+            floatSpeed: 0.003,
+            floatAmp: 25.0,
+
+            emissionChance: 0.03,
+
+            glowStrength: 20,
+            
+            colors: {
+                bg: [5, 5, 10],
+                core: [255, 50, 80],
+                node: [0, 255, 220],
+                hub: [255, 160, 0],
+                splitter: [255, 0, 200],
+                power: [255, 80, 0],
+                resonator: [0, 100, 255],
+                shield: [50, 255, 100],
+                phantom: [140, 140, 255],
+                solar: [255, 240, 50],
+                flower: [255, 50, 150],
+                wire: [20, 60, 160], 
+                pulse: [200, 240, 255]
+            }
+        };
+
+        // --- GLOBAL STATE ---
+        let nodes = [];
+        let wires = [];
+        let pulses = [];
+        let particles = [];
+        
+        // Camera State
+        let cam = { x: 0, y: 0, zoom: 1.0 };
+        let dragStart = { x: 0, y: 0 };
+        let isDragging = false;
+
+        function setup() {
+            createCanvas(windowWidth, windowHeight);
+            plantSeed(width / 2, height / 2);
+            for(let i=0; i<60; i++) {
+                particles.push(new Star(random(width), random(height)));
+            }
+        }
+
+        function draw() {
+            background(CONFIG.colors.bg[0], CONFIG.colors.bg[1], CONFIG.colors.bg[2]);
+
+            push();
+            
+            translate(cam.x, cam.y);
+            scale(cam.zoom);
+
+            let worldMouse = createVector(
+                (mouseX - cam.x) / cam.zoom, 
+                (mouseY - cam.y) / cam.zoom
+            );
+
+            updateSystem(worldMouse);
+
+            // --- RENDER PASS ---
+            
+            // 1. Wires (Base Layer)
+            drawWires();
+
+            // 2. Additive Layer (Glows)
+            blendMode(ADD);
+            drawNodes(); 
+            drawPulses();
+            drawParticles();
+
+            // 3. Mouse Interaction Light
+            noFill();
+            for(let i=0; i<2; i++) {
+                let size = 40 + i * 20 + sin(frameCount * 0.05) * 10;
+                let alpha = 20 - i * 5;
+                stroke(255, 255, 255, alpha);
+                ellipse(worldMouse.x, worldMouse.y, size);
+            }
+
+            blendMode(BLEND);
+            pop();
+            
+            drawVignette();
+            updateUI();
+        }
+
+        // --- DRAWING HELPERS ---
+
+        function drawVignette() {
+            noFill();
+            strokeWeight(150);
+            stroke(0, 0, 0, 180);
+            rect(0, 0, width, height);
+        }
+
+        // --- CLASSES ---
+
+        class Node {
+            constructor(x, y, forcedType = null, parent = null) {
+                this.anchor = createVector(x, y);
+                this.pos = this.anchor.copy();
+                this.noiseOffset = random(10000); 
+
+                this.parent = parent;
+                this.dead = false;
+                
+                this.health = 255; 
+                this.energy = 0;
+                this.connections = 1; 
+                this.radius = 0;      
+                this.glowAlpha = 0;
+                this.resWave = 0;
+                
+                this.phase = random(TWO_PI); 
+                
+                this.growthTimer = floor(random(CONFIG.baseGrowthInterval)); 
+                this.growthSpeed = 1.0; 
+                this.pulseCooldown = 0; 
+                
+                this.linkedNodes = new Set();
+                if (parent) this.linkedNodes.add(parent);
+
+                // --- Type Determination ---
+                if (forcedType) {
+                    this.subType = forcedType;
+                } else {
+                    let r = random(1);
+                    if (r < 0.05) this.subType = 'SOLAR'; 
+                    else if (r < 0.10) this.subType = 'PHANTOM'; 
+                    else if (r < 0.14) this.subType = 'RESONATOR';
+                    else if (r < 0.18) this.subType = 'HUB';
+                    else if (r < 0.22) this.subType = 'POWER';
+                    else if (r < 0.28) this.subType = 'SPLITTER';
+                    else if (r < 0.35) this.subType = 'SHIELD';
+                    else this.subType = 'STD';
+                }
+                
+                this.flowerLife = 0;
+                this.maxFlowerLife = CONFIG.flowerLifeBase + random(-100, 200);
+                this.petalCount = floor(random(5, 9));
+                this.petalRotation = 0;
+
+                this.setTypeTraits();
+            }
+
+            setTypeTraits() {
+                this.maxConnections = 3; this.targetRadius = 4;
+                switch(this.subType) {
+                    case 'CORE': this.maxConnections = 12; this.baseColor = CONFIG.colors.core; this.targetRadius = 16; break;
+                    case 'FLOWER': 
+                        this.maxConnections = 2; 
+                        this.baseColor = CONFIG.colors.flower; 
+                        this.targetRadius = 10; 
+                        this.flowerLife = this.maxFlowerLife;
+                        break;
+                    case 'SOLAR': this.maxConnections = 3; this.baseColor = CONFIG.colors.solar; this.targetRadius = 7; break;
+                    case 'PHANTOM': this.maxConnections = 4; this.baseColor = CONFIG.colors.phantom; this.targetRadius = 5; break;
+                    case 'RESONATOR': this.maxConnections = 4; this.baseColor = CONFIG.colors.resonator; this.targetRadius = 6; break;
+                    case 'HUB': this.maxConnections = 8; this.baseColor = CONFIG.colors.hub; this.targetRadius = 9; break;
+                    case 'POWER': this.maxConnections = 5; this.baseColor = CONFIG.colors.power; this.targetRadius = 7; break;
+                    case 'SPLITTER': this.maxConnections = 4; this.baseColor = CONFIG.colors.splitter; this.targetRadius = 6; this.growthSpeed = 1.5; break;
+                    case 'SHIELD': this.maxConnections = 4; this.baseColor = CONFIG.colors.shield; this.targetRadius = 6; break;
+                    case 'STD': this.maxConnections = (random(1) < 0.3) ? 3 : 2; this.baseColor = CONFIG.colors.node; this.targetRadius = 3.5; break;
+                }
+            }
+
+            update(mousePos) {
+                let t = frameCount * CONFIG.floatSpeed;
+                let dx = map(noise(t + this.noiseOffset), 0, 1, -CONFIG.floatAmp, CONFIG.floatAmp);
+                let dy = map(noise(t + this.noiseOffset + 100), 0, 1, -CONFIG.floatAmp, CONFIG.floatAmp);
+                this.pos.set(this.anchor.x + dx, this.anchor.y + dy);
+
+                // --- EMISSION LOGIC ---
+                if (this.health > 50 && random(1) < CONFIG.emissionChance) {
+                    let speed = (this.energy > 20) ? 0.8 : 0.3;
+                    spawnParticles(this.pos.x, this.pos.y, 1, this.baseColor, speed);
+                }
+
+                if (this.subType === 'FLOWER') {
+                    this.petalRotation += 0.01;
+                    this.flowerLife--;
+                    let lifeRatio = this.flowerLife / this.maxFlowerLife;
+                    this.targetRadius = 10 + sin(frameCount * 0.1) * 2;
+                    
+                    if (this.flowerLife < 100 && frameCount % 10 === 0) {
+                        this.baseColor = [255, 200, 200];
+                    } else {
+                        this.baseColor = CONFIG.colors.flower;
+                    }
+
+                    if (this.flowerLife <= 0) {
+                        this.explode();
+                        return;
+                    }
+                }
+
+                let breath = sin(frameCount * 0.03 + this.phase) * 0.5;
+                this.radius = lerp(this.radius, this.targetRadius + breath, 0.1);
+                
+                this.glowAlpha *= 0.92;
+                if (this.resWave > 0) this.resWave -= 1.5;
+                if (this.pulseCooldown > 0) this.pulseCooldown--;
+
+                if (this.subType !== 'CORE' && this.subType !== 'FLOWER') {
+                    if (this.subType === 'SOLAR') {
+                        if (this.energy < 40) this.energy += 0.06;
+                        this.health = min(this.health + 0.5, 255);
+                    }
+                    if (this.energy > 0) this.health = min(this.health + 2, 255);
+                    else this.health -= CONFIG.decayRate;
+                    if (this.health <= 0) { this.dead = true; return; }
+                }
+
+                if (p5.Vector.dist(this.pos, mousePos) < 80) {
+                    this.health = min(this.health + 4, 255);
+                    this.glowAlpha = 180;
+                    if (frameCount % 10 === 0 && this.energy < 20) this.energy++; 
+                }
+
+                if (this.health > 50) {
+                    if (this.subType === 'CORE' && frameCount % CONFIG.rhythm === 0) this.pulse();
+                    else if (this.subType !== 'CORE' && this.energy > 6 && this.pulseCooldown <= 0) this.pulse();
+
+                    if (this.subType === 'RESONATOR' && frameCount % 180 === 0 && this.energy > 6) this.resonate();
+                    if (this.subType === 'SHIELD') this.applyShield();
+                }
+
+                this.growthTimer += this.growthSpeed;
+                if (this.growthTimer >= CONFIG.baseGrowthInterval) {
+                    this.growthTimer = 0; 
+                    if (this.energy > CONFIG.growthCost && this.connections < this.maxConnections && nodes.length < CONFIG.maxNodes) {
+                        if (random(1) < CONFIG.crossLinkChance) {
+                            this.attemptWebbing();
+                        } else {
+                            this.attemptGrowth();
+                        }
+                    }
+                }
+            }
+
+            explode() {
+                this.dead = true;
+                spawnParticles(this.pos.x, this.pos.y, 40, this.baseColor, 5); 
+                spawnParticles(this.pos.x, this.pos.y, 20, [255, 255, 255], 2); 
+                
+                for (let other of nodes) {
+                    let d = p5.Vector.dist(this.pos, other.pos);
+                    if (d < 150 && !other.dead) {
+                        other.receivePulse(5, true);
+                        other.resWave = 255;
+                    }
+                }
+            }
+
+            resonate() {
+                this.energy -= 5;
+                this.resWave = 255; 
+                spawnParticles(this.pos.x, this.pos.y, 12, this.baseColor, 2);
+                for (let other of nodes) {
+                    if (other !== this && !other.dead && p5.Vector.dist(this.pos, other.pos) < 120) {
+                        other.receivePulse(2, true);
+                    }
+                }
+            }
+
+            applyShield() {
+                for (let other of nodes) {
+                    if (other !== this && !other.dead && other.subType !== 'CORE' && p5.Vector.dist(this.pos, other.pos) < 80) {
+                        other.health = min(other.health + CONFIG.decayRate * 0.9, 255);
+                    }
+                }
+            }
+
+            receivePulse(amount, direct = false) {
+                if (this.subType === 'POWER' && !direct) {
+                    amount *= 2.0;
+                    spawnParticles(this.pos.x, this.pos.y, 6, CONFIG.colors.power, 1.5);
+                }
+                this.energy += amount;
+                this.health = min(this.health + 70, 255);
+                this.glowAlpha = 255;
+                if (!direct && random(1) < 0.2) spawnParticles(this.pos.x, this.pos.y, 3, this.baseColor, 0.8);
+            }
+
+            pulse() {
+                let sent = false;
+                for (let w of wires) {
+                    if (w.start === this && !w.growing) {
+                        pulses.push(new Pulse(w));
+                        sent = true;
+                    }
+                }
+                if (sent) {
+                    this.energy *= 0.5; 
+                    this.pulseCooldown = CONFIG.rhythm + floor(random(-10, 20)); 
+                }
+            }
+
+            attemptWebbing() {
+                let attempts = 0;
+                let found = null;
+                
+                while(attempts < 15) {
+                    let rIdx = floor(random(nodes.length));
+                    let candidate = nodes[rIdx];
+                    
+                    if (candidate !== this && 
+                        !candidate.dead && 
+                        !this.linkedNodes.has(candidate) && 
+                        candidate.connections < candidate.maxConnections) {
+                            
+                        let d = p5.Vector.dist(this.pos, candidate.pos);
+                        if (d < CONFIG.crossLinkRange) {
+                            found = candidate;
+                            break;
+                        }
+                    }
+                    attempts++;
+                }
+
+                if (found) {
+                    this.energy -= CONFIG.growthCost;
+                    this.connectTo(found);
+                    spawnParticles(this.pos.x, this.pos.y, 3, [100, 255, 100], 1.5); 
+                } else {
+                    this.attemptGrowth(); 
+                }
+            }
+
+            attemptGrowth() {
+                let branchCount = (this.subType === 'SPLITTER') ? 2 : 1;
+                let spreadAngle = random(PI / 3, PI / 1.5);
+                let baseDir = this.parent ? p5.Vector.sub(this.pos, this.parent.pos).normalize() : p5.Vector.random2D();
+
+                this.energy -= CONFIG.growthCost;
+                let grew = false;
+
+                for (let i = 0; i < branchCount; i++) {
+                    let dir = baseDir.copy();
+                    dir.rotate(random(-spreadAngle/2, spreadAngle/2));
+                    let dist = random(40, 150); 
+                    
+                    let newPos = p5.Vector.add(this.pos, p5.Vector.mult(dir, dist));
+                    let collision = (this.subType === 'PHANTOM') ? false : this.checkCollision(newPos);
+
+                    if (collision && this.subType !== 'PHANTOM') {
+                        dist = random(30, 80);
+                        dir.rotate(random(PI/2));
+                        newPos = p5.Vector.add(this.pos, p5.Vector.mult(dir, dist));
+                        collision = this.checkCollision(newPos);
+                    }
+
+                    if (!collision) {
+                        let type = null;
+                        if (random(1) < CONFIG.flowerChance) type = 'FLOWER';
+                        this.createChild(newPos, type);
+                        grew = true;
+                    } 
+                }
+                if (!grew) this.energy += CONFIG.growthCost * 0.9;
+            }
+
+            createChild(newPos, type = null) {
+                let newNode = new Node(newPos.x, newPos.y, type, this);
+                nodes.push(newNode);
+                this.connectTo(newNode);
+                spawnParticles(this.pos.x, this.pos.y, 4, [200,255,255], 1.0);
+            }
+
+            connectTo(otherNode) {
+                wires.push(new Wire(this, otherNode));
+                this.connections++;
+                otherNode.connections++;
+                this.linkedNodes.add(otherNode);
+                otherNode.linkedNodes.add(this);
+            }
+
+            checkCollision(pos) {
+                for (let other of nodes) {
+                    if (p5.Vector.dist(pos, other.pos) < 35) return true; 
+                }
+                return false;
+            }
+
+            display() {
+                if (this.health <= 0) return;
+                
+                let col = this.baseColor;
+                
+                if (this.subType === 'FLOWER') {
+                    push();
+                    translate(this.pos.x, this.pos.y);
+                    rotate(this.petalRotation);
+                    
+                    let petalLen = this.radius * 2.5;
+                    let alpha = map(this.flowerLife, 0, 100, 255, 100); 
+
+                    noStroke();
+                    fill(col[0], col[1], col[2], alpha);
+                    
+                    for(let i=0; i<this.petalCount; i++) {
+                        rotate(TWO_PI / this.petalCount);
+                        ellipse(0, petalLen/2, 6, petalLen);
+                    }
+                    
+                    fill(255, 255, 200);
+                    ellipse(0, 0, this.radius);
+                    pop();
+                    return; 
+                }
+
+                if (this.subType === 'RESONATOR' && this.resWave > 0) {
+                    noFill();
+                    stroke(col[0], col[1], col[2], this.resWave);
+                    strokeWeight(1);
+                    ellipse(this.pos.x, this.pos.y, map(this.resWave, 255, 0, this.radius, 180));
+                }
+
+                noStroke();
+                
+                if (this.glowAlpha > 1) {
+                    fill(col[0], col[1], col[2], this.glowAlpha * 0.3);
+                    ellipse(this.pos.x, this.pos.y, this.radius * 5); 
+                }
+
+                let energyBright = min(this.energy * 5, 255);
+                fill(col[0] + energyBright, col[1] + energyBright, col[2] + energyBright, this.health);
+                ellipse(this.pos.x, this.pos.y, this.radius * 2);
+                
+                fill(255, 255, 255, this.health);
+                ellipse(this.pos.x, this.pos.y, this.radius * 0.8);
+            }
+        }
+
+        class Wire {
+            constructor(start, end) {
+                this.start = start; this.end = end;
+                this.growing = true; this.progress = 0; this.dead = false;
+            }
+            update() {
+                if (this.start.dead || this.end.dead) { this.dead = true; return; }
+                if (this.growing) {
+                    this.progress += 0.05; 
+                    if (this.progress >= 1) {
+                        this.progress = 1; this.growing = false;
+                        this.end.receivePulse(2);
+                    }
+                }
+            }
+            display() {
+                if (this.dead) return;
+                let avgHealth = (this.start.health + this.end.health) / 2;
+                let actualEnd = p5.Vector.lerp(this.start.pos, this.end.pos, this.progress);
+                
+                let alpha = map(avgHealth, 0, 255, 40, 180); 
+                strokeWeight(1.5);
+                stroke(CONFIG.colors.wire[0], CONFIG.colors.wire[1], CONFIG.colors.wire[2], alpha);
+                line(this.start.pos.x, this.start.pos.y, actualEnd.x, actualEnd.y);
+                
+                if (avgHealth > 200) {
+                    strokeWeight(2);
+                    stroke(CONFIG.colors.wire[0] + 50, CONFIG.colors.wire[1] + 50, CONFIG.colors.wire[2] + 100, alpha * 0.7);
+                    line(this.start.pos.x, this.start.pos.y, actualEnd.x, actualEnd.y);
+                }
+            }
+        }
+
+        class Pulse {
+            constructor(wire) {
+                this.wire = wire;
+                this.pos = 0;
+                this.speed = CONFIG.pulseSpeed / p5.Vector.dist(wire.start.pos, wire.end.pos);
+                this.speed = max(this.speed, 0.005); 
+                this.dead = false;
+                this.history = [];
+            }
+            update() {
+                if (this.wire.dead) { this.dead = true; return; }
+                
+                let currentLoc = p5.Vector.lerp(this.wire.start.pos, this.wire.end.pos, this.pos);
+                this.history.push(currentLoc);
+                if (this.history.length > 8) this.history.shift(); 
+
+                this.pos += this.speed;
+                if (this.pos >= 1) {
+                    this.pos = 1; this.dead = true;
+                    this.wire.end.receivePulse(4);
+                }
+            }
+            display() {
+                if(this.history.length < 2) return;
+                
+                noStroke();
+                
+                for(let i=0; i<this.history.length; i++) {
+                    let alpha = map(i, 0, this.history.length, 0, 200);
+                    let size = map(i, 0, this.history.length, 0.5, 2.5); 
+                    fill(CONFIG.colors.pulse[0], CONFIG.colors.pulse[1], CONFIG.colors.pulse[2], alpha);
+                    ellipse(this.history[i].x, this.history[i].y, size);
+                }
+
+                let loc = this.history[this.history.length-1];
+                fill(255);
+                ellipse(loc.x, loc.y, 2); 
+                
+                fill(CONFIG.colors.pulse[0], CONFIG.colors.pulse[1], CONFIG.colors.pulse[2], 80);
+                ellipse(loc.x, loc.y, 8); 
+            }
+        }
+
+        class Particle {
+            constructor(x, y, col, speedMod = 1) {
+                this.pos = createVector(x, y);
+                this.vel = p5.Vector.random2D().mult(random(0.5, 3.0) * speedMod); 
+                this.life = 255;
+                this.col = col;
+                this.decay = random(3, 8);
+            }
+            update() { 
+                this.pos.add(this.vel);
+                this.vel.mult(0.96); 
+                this.life -= this.decay; 
+            }
+            display() {
+                noStroke(); 
+                fill(this.col[0], this.col[1], this.col[2], this.life);
+                ellipse(this.pos.x, this.pos.y, random(2, 4)); 
+            }
+        }
+        
+        class Star {
+            constructor(x, y) {
+                this.pos = createVector(x, y);
+                this.size = random(0.5, 2.0);
+                this.alpha = random(40, 120);
+                this.twinkleSpeed = random(0.01, 0.05);
+            }
+            update() {
+                this.alpha += sin(frameCount * this.twinkleSpeed) * 2;
+            }
+            display() {
+                fill(200, 200, 255, this.alpha);
+                noStroke();
+                ellipse(this.pos.x, this.pos.y, this.size);
+            }
+        }
+
+        // --- SYSTEM ---
+
+        function plantSeed(x, y) {
+            let core = new Node(x, y, 'CORE');
+            core.energy = 80;
+            nodes.push(core);
+            spawnParticles(x, y, 40, CONFIG.colors.core, 2);
+        }
+
+        function updateSystem(mousePos) {
+            for (let n of nodes) n.update(mousePos);
+            for (let i = nodes.length - 1; i >= 0; i--) {
+                if (nodes[i].dead) {
+                    if (nodes[i].subType !== 'FLOWER') {
+                         spawnParticles(nodes[i].pos.x, nodes[i].pos.y, 5, [100,100,100], 0.5);
+                    }
+                    nodes.splice(i, 1);
+                }
+            }
+            for (let i = wires.length - 1; i >= 0; i--) {
+                wires[i].update();
+                if (wires[i].dead) wires.splice(i, 1);
+            }
+            for (let i = pulses.length - 1; i >= 0; i--) {
+                pulses[i].update();
+                if (pulses[i].dead) pulses.splice(i, 1);
+            }
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                if (particles[i].life <= 0) particles.splice(i, 1);
+            }
+        }
+
+        function spawnParticles(x, y, count, col, speed) {
+            for(let i=0; i<count; i++) particles.push(new Particle(x, y, col, speed));
+        }
+
+        function updateUI() {
+            document.getElementById('node-count').innerText = `Nodes: ${nodes.length} / ${CONFIG.maxNodes}`;
+            document.getElementById('zoom-level').innerText = `Zoom: ${Math.round(cam.zoom * 100)}%`;
+        }
+
+        function drawWires() { for (let w of wires) w.display(); }
+        function drawNodes() { for (let n of nodes) n.display(); }
+        function drawPulses() { for (let p of pulses) p.display(); }
+        function drawParticles() { 
+            for(let s of particles) {
+                if(s instanceof Star) s.display();
+                else s.display();
+            }
+        }
+
+        // --- INPUT & CAMERA CONTROL ---
+
+        function mouseWheel(event) {
+            let zoomFactor = 1.1;
+            let oldZoom = cam.zoom;
+            
+            if (event.delta > 0) {
+                cam.zoom /= zoomFactor;
+            } else {
+                cam.zoom *= zoomFactor;
+            }
+            
+            cam.zoom = constrain(cam.zoom, 0.1, 5.0);
+            
+            let mouseWorldX = (mouseX - cam.x) / oldZoom;
+            let mouseWorldY = (mouseY - cam.y) / oldZoom;
+            
+            cam.x = mouseX - mouseWorldX * cam.zoom;
+            cam.y = mouseY - mouseWorldY * cam.zoom;
+
+            return false;
+        }
+
+        function mousePressed() {
+            if (mouseButton === RIGHT) {
+                isDragging = true;
+                dragStart.x = mouseX;
+                dragStart.y = mouseY;
+                dragStart.camX = cam.x;
+                dragStart.camY = cam.y;
+            } else if (mouseButton === LEFT) {
+                // Calculate world coordinates
+                let wx = (mouseX - cam.x) / cam.zoom;
+                let wy = (mouseY - cam.y) / cam.zoom;
+                
+                // Find clicked node
+                let clickedNode = null;
+                let minDist = 30; // Tolerance for clicking
+
+                for (let n of nodes) {
+                    let d = dist(wx, wy, n.pos.x, n.pos.y);
+                    if (d < minDist) {
+                        clickedNode = n;
+                        minDist = d;
+                    }
+                }
+
+                // If a node was clicked, stimulate it
+                if (clickedNode) {
+                    clickedNode.energy += 20; 
+                    clickedNode.health = 255; 
+                    clickedNode.attemptGrowth(); 
+                    clickedNode.pulse(); 
+                    
+                    // Visual feedback
+                    spawnParticles(clickedNode.pos.x, clickedNode.pos.y, 10, [255, 255, 255], 2);
+                }
+            }
+        }
+        function mouseDragged() {
+            if (isDragging) {
+                cam.x = dragStart.camX + (mouseX - dragStart.x);
+                cam.y = dragStart.camY + (mouseY - dragStart.y);
+            }
+        }
+        function mouseReleased() { if (mouseButton === RIGHT) isDragging = false; }
+        document.oncontextmenu = function() { return false; }
+        function windowResized() { resizeCanvas(windowWidth, windowHeight); }
+
+    </script>
+</body>
+</html>
