@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Mojibake Wars - 文字錬成TD</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Serif+JP:wght@700;900&display=swap');
+body { font-family: 'Noto Serif JP', serif; background: #1a1a1a; color: #f0f0f0; overflow: hidden; touch-action: none; user-select: none; }
+/* スクロールバーのスタイル */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #222; border-radius: 2px; }
+::-webkit-scrollbar-thumb { background: #555; border-radius: 2px; border: 1px solid #222; }
+::-webkit-scrollbar-thumb:hover { background: #777; }
+
+#game-container { position: relative; width: 100vw; height: 100vh; display: flex; flex-direction: column; transition: all 0.5s ease; }
+
+/* レイアウト調整: LAB画面のUIエリアを大幅に拡大 */
+.layout-lab canvas { height: 15%; } 
+.layout-lab #ui-layer { height: 85%; }
+.layout-battle canvas { height: 75%; } 
+.layout-battle #ui-layer { height: 25%; }
+
+canvas { background: linear-gradient(to bottom, #2d2d2d, #1a1a1a); width: 100%; display: block; transition: height 0.5s ease; }
+#ui-layer { background: #0f0f0f; border-top: 2px solid #444; display: flex; flex-direction: column; padding: 8px; box-sizing: border-box; overflow: hidden; position: relative; z-index: 10; transition: height 0.5s ease; }
+
+.btn { background: #333; border: 1px solid #666; color: white; padding: 4px 10px; border-radius: 4px; font-family: 'Noto Serif JP', serif; cursor: pointer; transition: 0.1s; font-size: 12px; white-space: nowrap; }
+.btn:active { transform: scale(0.95); } .btn:disabled { opacity: 0.5; cursor: not-allowed; background: #222; color: #555; }
+.btn-primary { background: #8b0000; border-color: #ff4444; } .btn-accent { background: #0055aa; border-color: #4488ff; }
+.btn-gold { background: #aa8800; border-color: #ffdd44; color: #fff; } .btn-danger { background: #550000; border-color: #aa0000; color: #fcc; }
+.btn-ink { background: #222; border-color: #888; color: #ccc; } .btn-convert { background: #005555; border-color: #00aaaa; color: #cff; }
+.overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 100; }
+#char-tooltip { position: absolute; display: none; background: rgba(0,0,0,0.95); border: 1px solid #888; padding: 10px; border-radius: 4px; pointer-events: none; z-index: 9999; min-width: 180px; box-shadow: 0 4px 10px rgba(0,0,0,0.8); }
+.tooltip-title { font-size: 16px; font-weight: bold; border-bottom: 1px solid #444; margin-bottom: 5px; } .tooltip-stat span { color: #4f4; font-weight: bold; }
+.modal-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; flex-direction: column; justify-content: center; align-items: center; z-index: 50; }
+.convert-options { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; max-width: 300px; } .convert-btn { width: 80px; height: 60px; font-size: 14px; }
+#lab-screen { display: none; flex-direction: column; height: 100%; width: 100%; }
+.tab-container { display: flex; gap: 5px; margin-bottom: 5px; border-bottom: 1px solid #444; padding-bottom: 5px; overflow-x: auto; flex-shrink: 0; }
+.tab-btn { padding: 5px 15px; background: #222; border: 1px solid #444; border-bottom: none; border-radius: 5px 5px 0 0; color: #888; flex-shrink: 0; }
+.tab-btn.active { background: #444; color: #fff; border-color: #666; }
+.lab-content { display: none; flex-direction: column; height: 100%; overflow: hidden; } .lab-content.active { display: flex; }
+.slot-container { display: flex; gap: 5px; justify-content: center; margin-bottom: 2px; min-height: 55px; padding: 2px; background: rgba(0,0,0,0.3); border-radius: 4px; flex-shrink: 0; }
+.char-tile { width: 100%; aspect-ratio: 1; background: #e0e0e0; color: #000; display: flex; justify-content: center; align-items: center; font-size: 24px; font-weight: bold; border-radius: 2px; cursor: pointer; border: 1px solid #888; position: relative; }
+.char-tile.used { opacity: 0.3; cursor: default; border-color: #555; filter: grayscale(50%); } 
+/* 分類ごとの色分け */
+.char-tile[data-type="interval"] { background: #ffaaaa; border-color: #ff5555; } 
+.char-tile[data-type="range"] { background: #aaffaa; border-color: #55ff55; } 
+.char-tile[data-type="speed"] { background: #aaddff; border-color: #55aaff; } 
+.char-tile[data-type="type"] { background: #ffffaa; border-color: #dddd00; } 
+.char-tile[data-type="special"] { background: #ddbbff; border-color: #aa55ff; } 
+
+/* インベントリ: 隙間を詰めて一覧性向上 + 高さ制限解除(flex-growで広げる) */
+.inventory-grid { 
+    display: grid; 
+    grid-template-columns: repeat(auto-fill, minmax(45px, 1fr)); 
+    gap: 5px; /* 間隔を5pxに調整 */
+    overflow-y: auto; 
+    padding: 5px; 
+    background: #222; 
+    border: 1px solid #444; 
+    flex-grow: 1; 
+    min-height: 0; /* Flexbox内でのスクロールに必須 */
+}
+.inventory-grid.sell-mode-active { background: #311; border-color: #a55; }
+.inventory-grid.sell-mode-active .char-tile { border-color: #f55; opacity: 0.9; }
+.inventory-grid.sell-mode-active .char-tile::after { content: '売'; position: absolute; top: -2px; right: -2px; color: red; font-size: 10px; background: black; border-radius: 50%; width: 14px; height: 14px; display: flex; justify-content: center; align-items: center; border: 1px solid red; }
+.inventory-grid.convert-mode-active { background: #133; border-color: #5aa; }
+.inventory-grid.convert-mode-active .char-tile { border-color: #5ff; opacity: 0.9; }
+.inventory-grid.convert-mode-active .char-tile::after { content: '変'; position: absolute; top: -2px; right: -2px; color: cyan; font-size: 10px; background: black; border-radius: 50%; width: 14px; height: 14px; display: flex; justify-content: center; align-items: center; border: 1px solid cyan; }
+
+.upgrade-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; padding: 5px; flex-grow: 1; }
+.upgrade-item { display: flex; justify-content: space-between; align-items: center; background: #2a2a2a; padding: 10px; border: 1px solid #444; border-radius: 4px; flex-shrink: 0; }
+
+.deck-edit-container { display: flex; flex-direction: column; height: 100%; gap: 5px; overflow: hidden; }
+.deck-slots-area { display: flex; gap: 5px; padding: 8px; background: #2a2a2a; border: 1px solid #444; justify-content: flex-start; flex-wrap: wrap; min-height: 85px; flex-shrink: 0; }
+/* 所持ユニット欄: 広げる */
+.unit-storage-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); gap: 4px; overflow-y: auto; padding: 5px; background: #111; border: 1px solid #333; flex-grow: 1; min-height: 0; }
+.unit-thumb { height: 60px; background: #333; border: 2px solid #555; border-radius: 4px; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; position: relative; }
+.unit-thumb.selected { border-color: #ff0; box-shadow: 0 0 5px gold; } .unit-thumb.in-deck { opacity: 0.5; border-color: #0f0; }
+.unit-thumb .unit-level-badge { position: absolute; top: 0; right: 0; background: #0055aa; color: white; font-size: 10px; padding: 1px 3px; border-radius: 0 0 0 3px; }
+.unit-detail-panel { background: #222; padding: 5px 8px; border: 1px solid #444; display: flex; justify-content: space-between; align-items: center; font-size: 12px; height: 100px; flex-shrink: 0; }
+
+.stat-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 2px; width: 100%; }
+.stat-item { color: #aaa; font-size: 11px; } .stat-val { color: #fff; font-weight: bold; margin-left: 2px; }
+.enemy-forecast-container { display: flex; align-items: center; background: #222; padding: 4px 8px; border-radius: 4px; margin-bottom: 4px; }
+.forecast-icon { width: 24px; height: 24px; background: #f88; color: #000; font-size: 14px; font-weight: bold; display: flex; justify-content: center; align-items: center; border-radius: 2px; }
+.forecast-icon.boss { background: #a00; color: #fff; border: 2px solid #ff0; box-shadow: 0 0 5px red; }
+
+#battle-ui { display: none; flex-direction: column; height: 100%; }
+.unit-deck { display: flex; gap: 8px; overflow-x: auto; padding: 5px; flex-grow: 1; min-height: 0; align-items: center; }
+.unit-card { min-width: 60px; height: 90%; background: #333; border: 2px solid #555; border-radius: 5px; display: flex; flex-direction: column; align-items: center; justify-content: space-around; cursor: pointer; position: relative; overflow: hidden; flex-shrink: 0; }
+.unit-card::after { content: ''; position: absolute; bottom: 0; left: 0; width: 100%; height: var(--cd-pct, 0%); background: rgba(0,0,0,0.7); pointer-events: none; transition: height 0.1s linear; }
+.unit-card .lvl { position: absolute; top: 2px; right: 2px; font-size: 10px; color: #0ff; z-index: 1; }
+.reward-grid { display: flex; justify-content: center; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+.reward-card-small { width: 60px; height: 60px; background: #e0e0e0; color: #000; display: flex; justify-content: center; align-items: center; font-size: 28px; font-weight: bold; border-radius: 8px; border: 2px solid gold; }
+#game-log-container { position: fixed; top: 15%; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 5px; z-index: 9999; pointer-events: none; width: 300px; }
+.game-log-msg { background: rgba(0,0,0,0.85); color: #fff; padding: 6px 16px; border-radius: 20px; border: 1px solid #666; font-size: 14px; animation: fadeOut 2.5s forwards; box-shadow: 0 2px 10px rgba(0,0,0,0.5); font-family: 'Noto Serif JP', serif; }
+@keyframes fadeOut { 0% { opacity: 0; transform: translateY(10px); } 10% { opacity: 1; transform: translateY(0); } 80% { opacity: 1; } 100% { opacity: 0; } }
+</style>
+</head>
+<body class="layout-lab">
+<div id="game-container" class="layout-lab">
+    <canvas id="gameCanvas"></canvas>
+    <div id="char-tooltip"></div>
+    <div id="game-log-container"></div>
+    <div id="convert-modal" class="modal-overlay">
+        <div class="text-white text-lg mb-4">変換先の分類を選択 (消費: 10墨汁)</div>
+        <div class="convert-options">
+            <button class="btn btn-convert convert-btn" onclick="lab.executeConvert('interval')">攻撃間隔</button>
+            <button class="btn btn-convert convert-btn" onclick="lab.executeConvert('range')">射程</button>
+            <button class="btn btn-convert convert-btn" onclick="lab.executeConvert('speed')">移動速度</button>
+            <button class="btn btn-convert convert-btn" onclick="lab.executeConvert('type')">攻撃タイプ</button>
+            <button class="btn btn-convert convert-btn" onclick="lab.executeConvert('special')">特殊</button>
+            <button class="btn btn-danger convert-btn" onclick="lab.closeConvertModal()">キャンセル</button>
+        </div>
+    </div>
+    <div id="dismiss-modal" class="modal-overlay">
+        <div class="bg-[#222] border border-[#444] p-6 rounded-lg text-center shadow-lg max-w-[80%]">
+            <div class="text-xl text-white font-bold mb-2">解雇確認</div>
+            <div class="text-gray-300 mb-4">このユニットを解雇しますか？</div>
+            <div class="text-yellow-400 font-bold mb-6 text-lg">獲得墨汁: <span id="dismiss-refund-amount">0</span></div>
+            <div class="flex gap-4 justify-center">
+                <button class="btn btn-danger px-6 py-2" onclick="lab.exDis()">解雇する</button>
+                <button class="btn px-6 py-2" onclick="lab.clDis()">キャンセル</button>
+            </div>
+        </div>
+    </div>
+    <div id="ui-layer">
+        <div id="battle-ui">
+            <div class="flex justify-between items-center mb-1 px-2 h-6 flex-shrink-0">
+                <div class="flex items-center gap-2">
+                    <div class="text-xl font-bold">墨: <span id="ink-display">0</span>/<span id="max-ink-display">100</span></div>
+                    <button id="btn-castle-up" class="btn btn-gold text-[10px] py-1" onclick="app.upgCas()">城強化 Lv1 (50)</button>
+                </div>
+                <div class="text-xs text-gray-400">Wave <span id="wave-display">1</span></div>
+            </div>
+            <div class="unit-deck" id="unit-deck-container"></div>
+        </div>
+        <div id="lab-screen">
+            <div class="enemy-forecast-container flex-shrink-0"><div class="text-[11px] text-[#aaa] mr-2">NEXT ENEMY:</div><div id="enemy-forecast-list" class="flex gap-1"></div></div>
+            <div class="flex justify-between items-center mb-1 flex-shrink-0">
+                <div class="tab-container">
+                    <button class="tab-btn active" onclick="app.switchTab('craft')">錬成</button>
+                    <button class="tab-btn" onclick="app.switchTab('deck')">編成</button>
+                    <button class="tab-btn" onclick="app.switchTab('upgrade')">強化</button>
+                </div>
+                <div>
+                    <span class="text-xs mr-2 text-gray-300">墨汁: <span id="bokuju-display" class="font-bold text-white">0</span></span>
+                    <span class="text-xs mr-2 text-yellow-400 font-bold">SP: <span id="sp-display">0</span></span>
+                    <button class="btn btn-primary" onclick="app.startBattle()">出撃！</button>
+                </div>
+            </div>
+            <div id="tab-craft" class="lab-content active">
+                <div class="flex justify-between items-center px-1 mb-1 flex-shrink-0"><div class="text-xs"><span>スロット（2~5文字）</span> <span class="text-gray-400">所持: <span id="storage-count">0/20</span></span></div></div>
+                <div class="slot-container" id="synthesis-slots"></div>
+                <div class="flex justify-center gap-2 mb-1 flex-shrink-0"><button class="btn text-xs" onclick="lab.clearSlots()">クリア</button><button class="btn btn-accent text-xs" onclick="lab.synthesize()">錬成完了</button></div>
+                <div id="preview-stats" class="text-xs text-center text-yellow-400 h-4 mb-1 flex-shrink-0"></div>
+                <div id="bonus-display" class="text-xs text-center text-green-400 h-4 mb-1 flex-shrink-0"></div>
+                <div class="flex justify-between items-center px-1 mb-1 flex-shrink-0"><div class="text-xs">所持文字:</div><div class="flex gap-2"><button id="btn-toggle-convert" class="btn btn-ink text-[10px] py-1" onclick="lab.toggleConvertMode()">文字変換</button><button id="btn-toggle-sell" class="btn btn-ink text-[10px] py-1" onclick="lab.toggleSellMode()">文字を売る</button></div></div>
+                <div class="inventory-grid" id="char-inventory"></div>
+            </div>
+            <div id="tab-deck" class="lab-content">
+                <div class="deck-edit-container">
+                    <div id="unit-detail-view" class="unit-detail-panel"><div class="text-gray-500 w-full text-center">ユニットを選択してください</div></div>
+                    <div class="text-xs px-1 text-gray-400 flex-shrink-0">出撃デッキ <span id="deck-cap-display">(5/5)</span></div>
+                    <div class="deck-slots-area" id="deck-edit-slots"></div>
+                    <div class="text-xs px-1 text-gray-400 flex-shrink-0">所持ユニット</div>
+                    <div class="unit-storage-list" id="deck-storage-list"></div>
+                </div>
+            </div>
+            <div id="tab-upgrade" class="lab-content"><div class="upgrade-list" id="upgrade-list"></div></div>
+        </div>
+    </div>
+    <div id="overlay-screen" class="overlay">
+        <h1 class="text-5xl font-bold text-white mb-4 tracking-widest text-shadow">文字化け大戦</h1>
+        <p class="text-gray-300 mb-8">漢字を組み合わせて最強の軍団を作れ</p>
+        <button class="btn btn-primary text-2xl px-8 py-4" onclick="app.startGame()">開始</button>
+    </div>
+</div>
+<script>
+var T={INT:'interval',RNG:'range',SPD:'speed',ATK:'type',SPC:'special'};
+var KANJI_DB = {
+    '高':{type:T.INT,name:'高速',cost:50,stats:{cooldown:0.6,damage:0.8},desc:'攻撃速度UP。'},
+    '中':{type:T.INT,name:'中速',cost:0,stats:{cooldown:1.0,damage:1.0},desc:'標準性能'},
+    '低':{type:T.INT,name:'低速',cost:50,stats:{cooldown:1.5,damage:2.0},desc:'攻撃遅いが威力高。'},
+    '溜':{type:T.INT,name:'溜め',cost:100,stats:{cooldown:3.0,damage:4.0},desc:'超火力・超鈍重。'},
+    '前':{type:T.RNG,name:'最前',cost:0,stats:{range:40,respawn:0.9,hp:1.3},desc:'超近接。耐久1.3倍'},
+    '近':{type:T.RNG,name:'近距',cost:20,stats:{range:80,hp:1.2},desc:'近距離。耐久1.2倍'},
+    '中':{type:T.RNG,name:'中距',cost:40,stats:{range:180,hp:0.9},desc:'中距離。体力微減'},
+    '長':{type:T.RNG,name:'長距',cost:80,stats:{range:300,hp:0.7},desc:'長距離。体力低'},
+    '超':{type:T.RNG,name:'超長',cost:150,stats:{range:500,hp:0.4},desc:'超遠距離。体力激低'},
+    '速':{type:T.SPD,name:'高速',cost:50,stats:{speed:2.5,respawn:0.9},desc:'高速移動。'},
+    '普':{type:T.SPD,name:'普通',cost:0,stats:{speed:1.2},desc:'標準速度'},
+    '歩':{type:T.SPD,name:'徒歩',cost:0,stats:{speed:0.6,hp:1.2},desc:'低速・高耐久'},
+    '飛':{type:T.SPD,name:'飛行',cost:80,stats:{hp:0.6,isFlying:true,respawn:1.5},desc:'飛行、再出撃遅'},
+    '亀':{type:T.SPD,name:'重甲',cost:120,stats:{hp:3.5,speed:0.3},desc:'体力激増、超鈍足'},
+    '殴':{type:T.ATK,name:'殴打',cost:0,stats:{damage:1.2,cooldown:0.9},desc:'単体物理。攻・速UP'},
+    '多':{type:T.ATK,name:'多段',cost:80,stats:{multiHit:3,damage:0.4},desc:'多段ヒット'},
+    '爆':{type:T.ATK,name:'爆発',cost:120,stats:{aoe:60,cooldown:1.2},desc:'範囲攻撃。'},
+    '三':{type:T.ATK,name:'三方',cost:120,stats:{damage:0.6,multiTarget:3},desc:'3体同時攻撃'},
+    '毒':{type:T.ATK,name:'毒撃',cost:100,effect:'poison',desc:'毒継続ダメージ'},
+    '炎':{type:T.ATK,name:'炎上',cost:120,effect:'burn',desc:'炎上大ダメージ'},
+    '雷':{type:T.ATK,name:'落雷',cost:120,effect:'stun',desc:'確率スタン'},
+    '撃':{type:T.ATK,name:'強撃',cost:150,stats:{damage:3.0},effect:'force_single',desc:'攻撃3倍。単体化'},
+    '投':{type:T.ATK,name:'投擲',cost:100,effect:'throw',desc:'最遠敵狙い'},
+    '周':{type:T.ATK,name:'衝撃',cost:100,stats:{aoe:30,damage:1.3},effect:'shockwave',desc:'衝撃波'},
+    '遅':{type:T.SPC,name:'鈍足',cost:80,effect:'slow',desc:'3秒間移動半減'},
+    '防':{type:T.SPC,name:'防壁',cost:100,stats:{hp:2.0,kbResist:1.0},desc:'KB無効。'},
+    '盾':{type:T.SPC,name:'盾',cost:80,stats:{hp:2.5,damage:0.5,kbResist:0.5},desc:'KB半減'},
+    '重':{type:T.SPC,name:'重打',cost:80,stats:{damage:1.2},effect:'heavy_hit',desc:'強く弾き飛ばす'},
+    '暴':{type:T.SPC,name:'暴走',cost:150,stats:{hp:1.5,damage:1.5,speed:1.5},effect:'berserk',desc:'全強化、射程最低'},
+    '再':{type:T.SPC,name:'根性',cost:120,stats:{revive:1},desc:'一度だけ復活'},
+    '鋼':{type:T.SPC,name:'鋼体',cost:80,stats:{hp:1.8,kbResist:0.8},desc:'KB80%軽減'},
+    '軽':{type:T.SPC,name:'軽量',cost:80,stats:{hp:0.7,damage:0.7,costRate:0.6,respawnRate:0.6},desc:'能力低、コスト減'},
+    '耐':{type:T.SPC,name:'耐性',cost:50,stats:{damage:0.2,costRate:0.4},desc:'攻撃激減、コスト減'},
+    '狙':{type:T.SPC,name:'狙撃',cost:100,effect:'crit',desc:'20%で2倍撃'},
+    '幻':{type:T.SPC,name:'幻影',cost:100,effect:'dodge',desc:'20%で回避'},
+    '双':{type:T.SPC,name:'双子',cost:120,stats:{hp:0.5,damage:0.5},effect:'swarm',desc:'能力半減、2体出撃'},
+    '下':{type:T.SPC,name:'後退',cost:60,effect:'knockback',desc:'ノックバック'},
+    '死':{type:T.SPC,name:'自爆',cost:120,effect:'deathbomb',desc:'死亡時自爆'},
+    '安':{type:T.SPC,name:'安価',cost:20,stats:{costRate:0.7},desc:'コスト30%減'},
+    '早':{type:T.SPC,name:'早出',cost:20,stats:{respawnRate:0.7},desc:'再出撃30%短縮'}
+};
+var ENEMY_DB = [
+    {chars:['雑','魚'],min:1,s:{hp:100,dmg:8,spd:1.5,rng:40,cd:60,col:'#f88'}},
+    {chars:['盾','兵'],min:2,s:{hp:300,dmg:5,spd:0.8,rng:40,cd:100,col:'#a55',kbResist:0.3}},
+    {chars:['弓','手'],min:5,prio:'flying',s:{hp:40,dmg:6,spd:1.0,rng:250,cd:80,col:'#f8f'}},
+    {chars:['鳥'],min:5,s:{hp:30,dmg:8,spd:1.3,rng:40,cd:50,col:'#ff0',fly:true}},
+    {chars:['騎','兵'],min:8,s:{hp:200,dmg:20,spd:2.5,rng:50,cd:60,col:'#d84'}},
+    {chars:['鉄','鳥'],min:11,s:{hp:200,dmg:15,spd:0.6,rng:40,cd:100,col:'#888',fly:true}},
+    {chars:['魔','導'],min:12,s:{hp:60,dmg:15,spd:0.8,rng:200,cd:120,col:'#a0a',aoe:60}},
+    {chars:['忍','者'],min:15,s:{hp:80,dmg:10,spd:3.0,rng:40,cd:30,col:'#222'}},
+    {chars:['力','士'],min:18,s:{hp:600,dmg:50,spd:0.5,rng:50,cd:120,col:'#b84',aoe:60},ef:['shockwave']},
+    {chars:['巨','人'],boss:true,min:5,s:{hp:2000,dmg:80,spd:0.3,rng:80,cd:150,col:'#800',kbResist:0.9,scl:2.0}},
+    {chars:['大','蛇'],boss:true,min:10,ef:['poison'],s:{hp:1500,dmg:20,spd:0.5,rng:150,cd:60,col:'#0a0',kbResist:0.8,scl:1.8,mt:3}},
+    {chars:['魔','王'],boss:true,min:15,s:{hp:1000,dmg:200,spd:0.2,rng:400,cd:240,col:'#808',kbResist:0.9,scl:1.5,aoe:100}}
+];
+var BASE_STATS = {hp:100,damage:10,speed:1.0,range:50,cooldown:60,cost:50,kbLimit:3,respawnTime:180};
+var UPGRADES = {
+    inkSpeed:{name:"インク回復速度",desc:"自然回復UP",cost:1,max:10},
+    inkMax:{name:"インク最大値",desc:"最大貯蔵+200",cost:1,max:10},
+    killBonus:{name:"撃破ボーナス",desc:"撃破時回復+5",cost:1,max:5},
+    unitPower:{name:"軍団強化(SP)",desc:"全ステ+10%",cost:1,max:10},
+    deckSize:{name:"編成枠拡張",desc:"出撃数+1",cost:2,max:5}
+};
+
+var GameEngine = class {
+    constructor() {
+        this.cvs = document.getElementById('gameCanvas'); this.ctx = this.cvs.getContext('2d');
+        window.onresize = () => this.resize();
+        this.state = 'TITLE'; this.inv = []; this.genInv();
+        this.recipes = []; this.maxRec = 20; this.deck = []; this.maxDeck = 5; this.dCds = [];
+        this.stg = 1; this.sp = 0; this.bokuju = 0; this.ups = {inkSpeed:0,inkMax:0,killBonus:0,unitPower:0,deckSize:0};
+        this.ink = 0; this.maxInk = 1000; this.iSpd = 1.0; this.kBon = 0;
+        this.fr = 0; this.units = []; this.parts = []; this.efs = [];
+        this.base = {p:1000,e:1000,max:1000}; this.curEs = [];
+        this.bLv = 0; this.bCost = 100; this.bossData = null; this.bossTimer = 0;
+        this.cvs.onmousedown = (e) => this.hIn(e);
+        this.cvs.ontouchstart = (e) => { e.preventDefault(); this.hIn(e.touches[0]); };
+        this.bgP = Array(20).fill().map(()=>this.cBgP());
+        this.resize(); this.loop();
+    }
+    genInv() {
+        this.inv = [];
+        const cats = {[T.INT]:[],[T.RNG]:[],[T.SPD]:[]};
+        Object.keys(KANJI_DB).forEach(k => { const t = KANJI_DB[k].type; if(cats[t]) cats[t].push(k); });
+        [T.INT, T.RNG, T.SPD].forEach(t => { for(let i=0;i<3;i++) this.inv.push(cats[t][Math.floor(Math.random()*cats[t].length)]); });
+    }
+    cBgP() { return {x:Math.random()*this.cvs.width,y:Math.random()*this.cvs.height,c:Object.keys(KANJI_DB)[Math.floor(Math.random()*Object.keys(KANJI_DB).length)],s:Math.random()*0.5+0.1,sz:Math.random()*20+10,o:Math.random()*0.3}; }
+    resize() { this.cvs.width = this.cvs.clientWidth; this.cvs.height = this.cvs.clientHeight; this.gY = this.cvs.height * 0.85; }
+    loop() { this.upd(); this.drw(); requestAnimationFrame(()=>this.loop()); }
+    upd() {
+        this.fr++;
+        this.bgP.forEach(p => { p.y-=p.s; if(p.y<-50){p.y=this.cvs.height+50;p.x=Math.random()*this.cvs.width;p.c=Object.keys(KANJI_DB)[Math.floor(Math.random()*Object.keys(KANJI_DB).length)];} });
+        if(this.state!=='BATTLE') return;
+        this.dCds = this.dCds.map(c => c>0?c-1:0);
+        if(this.fr%3===0) { app.updDkUI(); app.updCasUI(); }
+        
+        let curMax = this.maxInk + (this.bLv * 100);
+        let curSpd = this.iSpd + (this.bLv * 0.2);
+        if(this.fr%5===0 && this.ink<curMax) { this.ink=Math.min(curMax,this.ink+curSpd); app.updInk(); }
+        
+        if(this.bossData && this.bossTimer<120) {
+            this.bossTimer++;
+            if(this.bossTimer>=120) {
+                this.spwBoss();
+            }
+        }
+
+        this.units.forEach(u=>u.upd(this));
+        this.units = this.units.filter(u=>{
+            if(u.dead && !u.isP && this.kBon>0) {
+                this.ink=Math.min(curMax,this.ink+this.kBon);
+                this.parts.push(new TxtP(u.x,u.y-40,`+${this.kBon}`,'#0ff',0.8)); app.updInk();
+            }
+            return !u.dead;
+        });
+        const enCnt = this.units.filter(u=>!u.isP).length;
+        if(this.fr%Math.max(30,360-(this.stg-1)*30)===0 && enCnt<50) this.spwE();
+        this.parts.forEach(p=>p.upd()); this.parts=this.parts.filter(p=>p.l>0);
+        this.efs.forEach(e=>e.upd()); this.efs=this.efs.filter(e=>e.l>0);
+        if(this.base.e<=0) this.end(true); else if(this.base.p<=0) this.end(false);
+    }
+    drw() {
+        const c = this.ctx; c.clearRect(0,0,this.cvs.width,this.cvs.height);
+        c.fillStyle='#222'; c.fillRect(0,0,this.cvs.width,this.cvs.height);
+        c.fillStyle='#444'; this.bgP.forEach(p=>{c.globalAlpha=p.o;c.font=`${p.sz}px serif`;c.fillText(p.c,p.x,p.y);});
+        c.globalAlpha=1; c.fillRect(0,this.gY,this.cvs.width,this.cvs.height-this.gY);
+        if(this.state!=='BATTLE') {
+            if(this.state==='LAB'||this.state==='TITLE'){ c.fillStyle='rgba(0,0,0,0.5)';c.fillRect(0,0,this.cvs.width,this.cvs.height);c.fillStyle='#fff';c.font='20px serif';c.textAlign='center';c.fillText(this.state==='LAB'?"作戦会議中":"待機中...",this.cvs.width/2,this.cvs.height/2); } return;
+        }
+        this.drwB(0,this.base.p,'#4488ff'); this.drwB(this.cvs.width-60,this.base.e,'#ff4444');
+        this.units.sort((a,b)=>a.y-b.y).forEach(u=>u.drw(c));
+        c.save(); c.globalCompositeOperation='lighter'; this.efs.forEach(e=>e.drw(c)); c.restore();
+        this.parts.forEach(p=>p.drw(c));
+    }
+    drwB(x,hp,col) {
+        const c=this.ctx, w=60, h=120, y=this.gY-h, p=Math.max(0,hp/this.base.max);
+        c.fillStyle='#333';c.fillRect(x,y-15,w,10); c.fillStyle=p>0.5?'#0f0':'#f00';c.fillRect(x,y-15,w*p,10);
+        c.fillStyle=col;c.fillRect(x,y,w,h); c.fillStyle='#fff';c.font='20px serif';c.textAlign='center';c.fillText(col==='#ff4444'?'敵':'城',x+w/2,y+h/2);
+    }
+    recalc() {
+        this.maxDeck = 5 + (this.ups.deckSize||0);
+        this.maxInk = 1000 + (this.ups.inkMax*200);
+        this.iSpd = 1.0 + (this.ups.inkSpeed*0.25);
+        this.kBon = this.ups.killBonus*5;
+        while(this.dCds.length<this.maxDeck) this.dCds.push(0);
+    }
+    decE() {
+        this.curEs = []; this.bossData = null;
+        const isBoss = (this.stg%5===0);
+        if(isBoss) {
+            const bs = ENEMY_DB.filter(e=>e.boss && e.min<=this.stg);
+            this.bossData = {...bs.length?bs[Math.floor(Math.random()*bs.length)]:ENEMY_DB.find(e=>e.chars[0]==='巨')};
+        }
+        const ns = ENEMY_DB.filter(e=>!e.boss && e.min<=this.stg).sort(()=>0.5-Math.random());
+        for(let i=0;i<Math.min(isBoss?3:4,ns.length);i++) this.curEs.push(ns[i]);
+        lab.renE();
+    }
+    spwU(idx) {
+        if(this.dCds[idx]>0)return;
+        const r = this.recipes[this.deck[idx]]; if(!r||this.ink<r.cost)return;
+        this.ink-=r.cost; this.dCds[idx]=r.stats.respawnTime; app.updInk(); app.updDkUI();
+        const m = (1+(this.ups.unitPower*0.1)) * (1+((r.level||1)-1)*0.1);
+        const s = {...r.stats}; s.hp*=m; s.damage*=m;
+        const cnt = r.effects.includes('swarm')?2:1;
+        for(let i=0;i<cnt;i++){
+            const u=new Unit({isP:true,x:60+i*15,y:this.gY-10+(Math.random()*20-10),s,chars:r.chars,efs:r.effects,lvl:r.level||1});
+            if(r.effects.includes('throw')) u.prio='far';
+            this.units.push(u);
+        }
+    }
+    spwE() {
+        if(!this.curEs.length){this.decE();if(!this.curEs.length)this.curEs=[ENEMY_DB[0]];}
+        let t = this.curEs[Math.floor(Math.random()*this.curEs.length)] || ENEMY_DB[0];
+        const dif = 1+(this.stg-1)*0.2;
+        const s = {hp:t.s.hp*dif,damage:t.s.dmg*dif,speed:t.s.spd,range:t.s.rng,cooldown:t.s.cd,color:t.s.col,kbResist:t.s.kbResist,scale:t.s.scl,isFlying:t.s.fly,aoe:t.s.aoe,multiTarget:t.s.mt};
+        const u = new Unit({isP:false,x:this.cvs.width-60,y:t.s.fly?this.gY-120:this.gY-10+(Math.random()*20-10),s,chars:t.chars,efs:t.ef||[]});
+        if(t.prio) u.prio=t.prio;
+        this.units.push(u);
+    }
+    spwBoss() {
+        if(!this.bossData) return;
+        const t = this.bossData;
+        const dif = 1+(this.stg-1)*0.2;
+        const s = {hp:t.s.hp*dif,damage:t.s.dmg*dif,speed:t.s.spd,range:t.s.rng,cooldown:t.s.cd,color:t.s.col,kbResist:t.s.kbResist,scale:t.s.scl,isFlying:t.s.fly,aoe:t.s.aoe,multiTarget:t.s.mt,isBoss:true};
+        const u = new Unit({isP:false,x:this.cvs.width-60,y:this.gY-10,s,chars:t.chars,efs:t.ef||[]});
+        this.units.push(u);
+        app.log("BOSS出現！");
+    }
+    upgradeBase() {
+        if(this.bLv >= 10) return;
+        if(this.ink >= this.bCost) {
+            this.ink -= this.bCost;
+            this.bLv++;
+            this.bCost = Math.floor(100 * Math.pow(1.6, this.bLv));
+            app.log(`城強化 Lv${this.bLv}！`);
+            app.updInk(); app.updCasUI();
+        } else {
+            app.log("墨汁不足");
+        }
+    }
+    hIn(e){}
+    end(w) { this.state=w?'REW':'GO'; app.res(w); }
+}
+
+var Unit = class {
+    constructor({isP,x,y,s,chars,efs,lvl}) {
+        Object.assign(this,{isP,x,y,chars:chars||['?'],efs:efs||[],lvl:lvl||1,scl:s.scale||1,isBoss:s.isBoss||false,hp:s.hp||100,maxHp:s.hp||100,dmg:s.damage||10,spd:(s.speed||1)*(isP?1:-1),rng:s.range||50,cdM:s.cooldown||60,cd:0,mt:s.multiTarget||1,col:s.color||(isP?'#fff':'#f88'),mh:s.multiHit||1,aoe:s.aoe||0,prc:s.pierce||false,isFly:s.isFlying||false,kbR:s.kbResist||0,kbS:0,pt:0,rv:s.revive||0,prio:null,st:0,dead:false,state:'WALK',kbV:0,hpKbDone:false,slowTime:0});
+        if(this.isFly&&isP) this.y=y-100;
+    }
+    upd(g) {
+        if(this.dead)return;
+        if(this.pt>0){this.pt--;if(this.pt%60===0){this.tkDmg(Math.ceil(this.maxHp*0.05),g,true);g.parts.push(new TxtP(this.x,this.y-50,"毒","#a0a",0.8));}}
+        if(this.st>0){this.st--;this.state='IDLE';return;}
+        if(this.kbS>0){this.kbS--;this.x+=this.kbV;this.kbV*=0.9;this.state='KB';if(this.kbS<=0)this.state='WALK';return;}
+        if(Math.abs(this.kbV)>0.1){this.x+=this.kbV;this.kbV*=0.8;return;}
+        if(this.cd>0)this.cd--;
+        
+        let curSpd = this.spd;
+        if(this.slowTime>0){this.slowTime--;curSpd*=0.5;}
+
+        const ens=g.units.filter(u=>u.isP!==this.isP).sort((a,b)=>{
+            const ap=(this.prio==='flying'&&a.isFly)?1:0, bp=(this.prio==='flying'&&b.isFly)?1:0;
+            if(ap!==bp)return bp-ap;
+            return this.prio==='far'?Math.abs(b.x-this.x)-Math.abs(a.x-this.x):Math.abs(a.x-this.x)-Math.abs(b.x-this.x);
+        });
+        let tars=[]; for(const u of ens){if(Math.sqrt((u.x-this.x)**2+(u.y-this.y)**2)<this.rng){tars.push(u);if(tars.length>=this.mt)break;}}
+        let mT=tars[0]||null; const bD=Math.abs((this.isP?g.cvs.width-60:60)-this.x);
+        if(bD<this.rng && (!mT || (this.prio!=='flying'&&this.prio!=='far'&&bD<Math.abs(mT.x-this.x)))) mT='BASE';
+        if(mT){
+            this.state='ATK';
+            if(this.cd<=0) this.atk(g,mT==='BASE'?['BASE']:tars);
+        } else { this.state='WALK'; this.x+=curSpd; }
+        this.x=Math.max(0,Math.min(g.cvs.width,this.x));
+    }
+    atk(g,ts) {
+        this.cd=this.cdM;
+        const ec = this.isP ? '#0cf' : '#f24';
+        ts.forEach(t=>{
+            const [tx,ty] = t==='BASE'?[this.isP?g.cvs.width-30:30,g.gY-60]:[t.x,t.y];
+            if(this.efs.includes('shockwave'))g.efs.push(new VisEf('SW',tx,ty,this.aoe,ec));
+            else if(this.aoe>0)g.efs.push(new VisEf('EXP',tx,ty,this.aoe,ec));
+            else if(this.rng>150||this.prc)g.efs.push(new VisEf('BEAM',this.x,this.y-20*this.scl,null,ec,{tx,ty}));
+            else g.efs.push(new VisEf('SL',tx,ty,30*this.scl,ec));
+        });
+        const hit=(t)=>{
+            if(t==='BASE'){
+                if(this.isP)g.base.e-=this.dmg; else g.base.p-=this.dmg;
+                g.parts.push(new DmgN(this.isP?g.cvs.width-60:60,g.gY-100,Math.floor(this.dmg)));
+                g.efs.push(new VisEf('HIT',(this.isP?g.cvs.width-30:30),g.gY-60,20,'#fff'));
+            } else {
+                if(t.dead)return;
+                if(t.efs.includes('dodge')&&Math.random()<0.2){g.parts.push(new TxtP(t.x,t.y-40,"回避","#aaa"));return;}
+                let d=this.dmg;
+                if(this.efs.includes('crit')&&Math.random()<0.2){d*=2;g.parts.push(new TxtP(t.x,t.y-80,"CRIT!","#ff0",1.2));}
+                if(this.prio==='flying'&&t.isFly){d*=1.5;g.parts.push(new TxtP(t.x,t.y-60,"特効","#ff0"));}
+                t.tkDmg(d,g);
+                if(this.efs.includes('slow'))t.slowTime=180; if(this.efs.includes('poison'))t.pt=300; if(this.efs.includes('burn'))t.pt=180;
+                if(this.efs.includes('stun')&&Math.random()<0.1)t.st=60;
+                
+                if(this.efs.includes('knockback')) t.triggerKb(10);
+                else if(this.efs.includes('heavy_hit')) t.triggerKb(20);
+            }
+        };
+        if(this.aoe>0||this.prc){
+            const z=this.aoe>0?this.aoe:this.rng;
+            g.units.forEach(u=>{if(u.isP!==this.isP&&Math.sqrt((u.x-this.x)**2+(u.y-this.y)**2)<=z)hit(u);});
+            if(Math.abs((this.isP?g.cvs.width:0)-this.x)<=z)hit('BASE');
+        } else ts.forEach(hit);
+        if(this.mh>1) for(let i=1;i<this.mh;i++) setTimeout(()=>{if(!this.dead)ts.forEach(t=>{if(t==='BASE'||!t.dead)hit(t)})},i*100);
+    }
+    tkDmg(d,g,p=false) {
+        this.hp-=d; if(!p){g.parts.push(new DmgN(this.x,this.y-40*this.scl,Math.floor(d)));g.efs.push(new VisEf('HIT',this.x,this.y-20*this.scl,15*this.scl,'#fff'));}
+        if(!this.hpKbDone && this.hp <= this.maxHp*0.5 && this.hp > 0) {this.triggerKb(15);this.hpKbDone = true;}
+        if(this.hp<=0){
+            if(this.rv>0){this.rv--;this.hp=this.maxHp*0.5;g.parts.push(new TxtP(this.x,this.y-60,"復活","#ff0",1.2));g.efs.push(new VisEf('EXP',this.x,this.y,50*this.scl,'#ff0'));return;}
+            this.dead=true;
+            if(this.efs.includes('deathbomb')){g.units.forEach(u=>{if(u.isP!==this.isP&&Math.abs(u.x-this.x)<100)u.tkDmg(this.dmg*2,g)});g.efs.push(new VisEf('EXP',this.x,this.y,80*this.scl,'#f00'));}
+        }
+    }
+    triggerKb(power) {
+        const dist = power * (1.0 - this.kbR);
+        if(dist > 0.5) {this.kbS = 15;this.kbV = this.isP ? -dist : dist;this.state = 'KB';}
+    }
+    drw(c) {
+        c.save(); if(this.state==='KB'){c.translate(this.x,this.y);c.rotate(this.isP?-0.5:0.5);c.translate(-this.x,-this.y);}
+        c.fillStyle=this.pt>0?'#a0a':(this.slowTime>0?'#88f':this.col); c.strokeStyle='#000'; c.lineWidth=3*this.scl;
+        const b=this.state==='WALK'?Math.sin(Date.now()/100)*5:0, fs=24*this.scl, txt=this.chars.join('');
+        c.font=`bold ${fs}px "Noto Serif JP"`; c.textAlign='center'; c.strokeText(txt,this.x,this.y+b); c.fillText(txt,this.x,this.y+b);
+        const w=30*this.scl, p=Math.max(0,this.hp/this.maxHp);
+        c.fillStyle='#000';c.fillRect(this.x-w/2,this.y-30*this.scl+b,w,4*this.scl);
+        c.fillStyle=this.isP?'#0f0':'#f00';c.fillRect(this.x-w/2,this.y-30*this.scl+b,w*p,4*this.scl);
+        c.restore();
+    }
+}
+var VisEf = class {
+    constructor(t,x,y,sz,col,o={}) { Object.assign(this,{t,x,y,sz:sz||20,col,l:20,ml:20,o}); }
+    upd() { this.l--; }
+    drw(c) {
+        const p=1-this.l/this.ml; c.save(); c.globalAlpha=this.l/this.ml;
+        if(this.t==='SL'){
+            c.strokeStyle=this.col;c.lineWidth=4;
+            c.beginPath();c.moveTo(this.x-15,this.y-15);c.lineTo(this.x+15,this.y+15);c.stroke();
+            c.beginPath();c.moveTo(this.x+15,this.y-15);c.lineTo(this.x-15,this.y+15);c.stroke();
+        } else if(this.t==='BEAM'&&this.o.tx!==undefined){
+            c.strokeStyle=this.col;c.lineWidth=5;c.lineCap='round';
+            c.beginPath();c.moveTo(this.x,this.y);c.lineTo(this.o.tx,this.o.ty);c.stroke();
+            c.strokeStyle='#fff';c.lineWidth=2;c.stroke();
+        } else if(this.t==='EXP'){
+            c.fillStyle=this.col;c.globalAlpha=0.3*(this.l/this.ml);
+            c.beginPath();c.arc(this.x,this.y,this.sz,0,Math.PI*2);c.fill();
+            c.globalAlpha=1*(this.l/this.ml);c.strokeStyle=this.col;c.lineWidth=2;
+            c.beginPath();c.arc(this.x,this.y,this.sz*p,0,Math.PI*2);c.stroke();
+        } else if(this.t==='SW'){
+            c.strokeStyle=this.col;c.lineWidth=3;
+            c.beginPath();c.arc(this.x,this.y,this.sz*p,0,Math.PI*2);c.stroke();
+        } else if(this.t==='HIT'){
+            c.fillStyle='#fff';c.beginPath();c.arc(this.x,this.y,this.sz*p,0,Math.PI*2);c.fill();
+        }
+        c.restore();
+    }
+}
+var TxtP = class {
+    constructor(x,y,t,c,s=1){this.x=x;this.y=y;this.t=t;this.c=c;this.l=30;this.vy=-2;this.s=s;}
+    upd(){this.y+=this.vy;this.l--;} drw(c){c.globalAlpha=this.l/30;c.fillStyle=this.c;c.font=`bold ${20*this.s}px serif`;c.fillText(this.t,this.x,this.y);c.globalAlpha=1;}
+}
+var DmgN = class extends TxtP{constructor(x,y,n){super(x,y,n,'#fff');}}
+
+var LabSystem = class {
+    constructor() { 
+        this.sl=[]; 
+        this.slIdx=[];
+        this.sel=null; this.isS=false; this.isC=false; this.cIdx=null; this.rf=0; 
+    }
+    toggleSellMode() { this.isS=!this.isS; this.isC=false; this.updUI(); }
+    toggleConvertMode() { this.isC=!this.isC; this.isS=false; this.updUI(); }
+    updUI() {
+        const s=document.getElementById('btn-toggle-sell'), c=document.getElementById('btn-toggle-convert'), g=document.getElementById('char-inventory');
+        s.className='btn text-[10px] py-1 '+(this.isS?'btn-danger':'btn-ink'); s.textContent=this.isS?"売却中 (20墨)":"文字を売る";
+        c.className='btn text-[10px] py-1 '+(this.isC?'btn-accent':'btn-ink'); c.textContent=this.isC?"変換対象を選択":"文字変換";
+        g.className='inventory-grid '+(this.isS?'sell-mode-active':(this.isC?'convert-mode-active':''));
+    }
+    renderInv() {
+        const c=document.getElementById('char-inventory'); c.innerHTML='';
+        game.inv.forEach((ch,i)=>{
+            const d=document.createElement('div'); d.className='char-tile'; 
+            if(this.slIdx.includes(i)) {
+                d.classList.add('used');
+            }
+            d.textContent=ch; d.dataset.type=KANJI_DB[ch].type;
+            d.onmouseenter=(e)=>this.tt(e,ch); d.onmouseleave=()=>document.getElementById('char-tooltip').style.display='none';
+            d.onclick=()=>{
+                if(this.slIdx.includes(i)) return;
+                if(this.isS)this.sell(ch,i);else if(this.isC)this.opCv(i);else this.add(ch, i);
+            }
+            c.appendChild(d);
+        });
+        document.getElementById('storage-count').textContent=`${game.recipes.length}/${game.maxRec}`;
+        document.getElementById('sp-display').textContent=game.sp; document.getElementById('bokuju-display').textContent=game.bokuju;
+        this.renUp(); this.renDk(); this.renE();
+    }
+    renE(){const c=document.getElementById('enemy-forecast-list');if(c){c.innerHTML='';game.curEs.forEach(e=>{const d=document.createElement('div');d.className=`forecast-icon ${e.boss?'boss':''}`;d.textContent=e.chars[0];c.appendChild(d);})}}
+    sell(c,i){game.inv.splice(i,1);game.bokuju+=20;this.renderInv();}
+    opCv(i){if(game.bokuju<10){app.log("墨汁不足(10)");return;}this.cIdx=i;document.getElementById('convert-modal').style.display='flex';}
+    closeConvertModal(){document.getElementById('convert-modal').style.display='none';this.cIdx=null;}
+    executeConvert(t){
+        if(this.cIdx===null)return;
+        game.bokuju-=10;const cds=Object.keys(KANJI_DB).filter(k=>KANJI_DB[k].type===t);
+        const n=cds[Math.floor(Math.random()*cds.length)]; game.inv[this.cIdx]=n;
+        this.closeConvertModal();this.toggleConvertMode();this.renderInv();app.log(`「${n}」に変換！`);
+    }
+    tt(e,c){
+        const d=KANJI_DB[c], tt=document.getElementById('char-tooltip');
+        let h=''; if(d.stats)Object.keys(d.stats).forEach(k=>{if(k!=='kbLimit')h+=`<div class="tooltip-stat">${k}: <span>${k==='isFlying'?'○':d.stats[k]}</span></div>`});
+        tt.innerHTML=`<div class="tooltip-title">${c} - ${d.name}</div><div class="tooltip-desc">${d.desc}</div><div class="flex flex-wrap gap-2">${h}</div>`;
+        tt.style.display='block'; this.mvTt(e); e.target.onmousemove=(ev)=>this.mvTt(ev);
+    }
+    mvTt(e){const t=document.getElementById('char-tooltip');let l=e.pageX+10,tp=e.pageY-10;if(l+200>window.innerWidth)l=e.pageX-210;if(tp+100>window.innerHeight)tp=e.pageY-110;t.style.left=l+'px';t.style.top=tp+'px';}
+    renderSlots(){
+        const c=document.getElementById('synthesis-slots');c.innerHTML='';
+        this.sl.forEach((ch,i)=>{const d=document.createElement('div');d.className='char-tile';d.textContent=ch;d.dataset.type=KANJI_DB[ch].type;d.onclick=()=>this.rm(i);c.appendChild(d);});
+        this.updPre();
+    }
+    renUp(){
+        const l=document.getElementById('upgrade-list');l.innerHTML='';
+        Object.keys(UPGRADES).forEach(k=>{
+            const d=UPGRADES[k], c=game.ups[k], m=c>=d.max, div=document.createElement('div');
+            div.className='upgrade-item';
+            div.innerHTML=`<div class="upgrade-info"><div class="upgrade-name">${d.name} <span class="upgrade-level">Lv${c}</span></div><div class="upgrade-desc">${d.desc}</div></div><button class="btn btn-gold" ${m||game.sp<d.cost?'disabled':''} onclick="lab.buy('${k}')">${m?'MAX':`強化(${d.cost}SP)`}</button>`;
+            l.appendChild(div);
+        });
+    }
+    renDk(){
+        const sl=document.getElementById('deck-storage-list'); sl.innerHTML='';
+        game.recipes.forEach((r,i)=>{
+            const d=document.createElement('div'); d.className='unit-thumb'+(this.sel===i?' selected':'')+(game.deck.includes(i)?' in-deck':'');
+            d.innerHTML=`<div class="font-bold text-lg text-white">${r.chars[0]}</div><div class="text-xs text-gray-400">${r.cost}</div><div class="unit-level-badge">Lv${r.level||1}</div>`;
+            d.onclick=()=>this.selU(i); sl.appendChild(d);
+        });
+        const ds=document.getElementById('deck-edit-slots'); ds.innerHTML=''; game.recalc();
+        document.getElementById('deck-cap-display').textContent=`(${game.deck.length}/${game.maxDeck})`;
+        for(let i=0;i<game.maxDeck;i++){
+            const d=document.createElement('div'); d.className='unit-thumb'; d.style.width='70px';
+            const ri=game.deck[i];
+            if(ri!==undefined&&game.recipes[ri]){
+                const r=game.recipes[ri]; d.innerHTML=`<div class="font-bold text-lg text-white">${r.chars[0]}</div><div class="text-xs text-gray-400">${r.cost}</div><div class="unit-level-badge">Lv${r.level||1}</div>`;
+                d.onclick=()=>{game.deck.splice(i,1);this.renDk();};
+            }else{d.innerHTML=`<div class="text-gray-600 text-2xl">+</div>`;d.style.borderStyle='dashed';}
+            ds.appendChild(d);
+        }
+        const dv=document.getElementById('unit-detail-view');
+        if(this.sel!==null&&game.recipes[this.sel]){
+            const r=game.recipes[this.sel], dps=(r.stats.damage/(r.stats.cooldown/60)).toFixed(1), inD=game.deck.includes(this.sel), lvl=r.level||1, uc=lvl*50, rf=(r.chars.length*30)+(lvl*50);
+            dv.innerHTML=`<div class="flex flex-col items-center mr-2 min-w-[60px]"><div class="text-2xl font-bold text-white mb-1">${r.chars.join('')}</div>${inD?'<button class="btn btn-primary text-xs w-full" onclick="lab.togDk()">外す</button>':'<button class="btn btn-accent text-xs w-full" onclick="lab.togDk()">編成</button>'}</div>
+                <div class="flex-grow"><div class="stat-grid mb-1"><div class="stat-item">HP:<span class="stat-val">${Math.floor(r.stats.hp)}</span></div><div class="stat-item">攻:<span class="stat-val">${Math.floor(r.stats.damage)}</span></div><div class="stat-item">DPS:<span class="stat-val">${dps}</span></div><div class="stat-item">射:<span class="stat-val">${Math.floor(r.stats.range)}</span></div><div class="stat-item">速:<span class="stat-val">${r.stats.speed.toFixed(1)}</span></div><div class="stat-item">間:<span class="stat-val">${(r.stats.cooldown/60).toFixed(2)}s</span></div></div>
+                <div class="flex justify-between items-end"><div class="text-[10px] text-yellow-300 w-24 leading-tight">${r.effects.join(',')||'なし'} ${r.stats.isFlying?'飛行':''}</div><div class="flex gap-1"><button class="btn btn-ink text-[10px]" ${game.bokuju<uc?'disabled':''} onclick="lab.lvlUp(${this.sel})">強化:${uc}</button><button class="btn btn-danger text-[10px]" onclick="lab.delU(${rf})">解雇(+${rf})</button></div></div></div>`;
+        }else dv.innerHTML=`<div class="text-gray-500 w-full text-center">ユニットを選択してください</div>`;
+    }
+    selU(i){this.sel=i;this.renDk();}
+    togDk(){if(this.sel===null)return;const i=game.deck.indexOf(this.sel);if(i>=0)game.deck.splice(i,1);else{if(game.deck.length>=game.maxDeck){app.log("デッキ満杯");return;}game.deck.push(this.sel);}this.renDk();}
+    lvlUp(i){const r=game.recipes[i],c=(r.level||1)*50;if(game.bokuju>=c){game.bokuju-=c;r.level=(r.level||1)+1;r.stats.hp*=1.1;r.stats.damage*=1.1;document.getElementById('bokuju-display').textContent=game.bokuju;this.renDk();}}
+    delU(r){if(this.sel===null)return;this.rf=r;document.getElementById('dismiss-refund-amount').textContent=r;document.getElementById('dismiss-modal').style.display='flex';}
+    exDis(){game.bokuju+=this.rf;document.getElementById('bokuju-display').textContent=game.bokuju;const i=game.deck.indexOf(this.sel);if(i>=0)game.deck.splice(i,1);game.recipes.splice(this.sel,1);game.deck=game.deck.map(x=>x>this.sel?x-1:x);this.sel=null;document.getElementById('storage-count').textContent=`${game.recipes.length}/${game.maxRec}`;this.clDis();this.renDk();}
+    clDis(){document.getElementById('dismiss-modal').style.display='none';this.rf=0;}
+    buy(k){const d=UPGRADES[k];if(game.sp>=d.cost&&game.ups[k]<d.max){game.sp-=d.cost;game.ups[k]++;game.recalc();this.renderInv();}}
+    
+    add(c, idx){
+        if(this.sl.length<5 && !this.slIdx.includes(idx)){
+            this.sl.push(c);
+            this.slIdx.push(idx);
+            this.renderSlots();
+            this.renderInv();
+        }
+    } 
+    rm(i){
+        this.sl.splice(i,1);
+        this.slIdx.splice(i,1);
+        this.renderSlots();
+        this.renderInv();
+    } 
+    clearSlots(){
+        this.sl=[];
+        this.slIdx=[];
+        this.renderSlots();
+        this.renderInv();
+    }
+    
+    updPre(){
+        if(this.sl.length<2){document.getElementById('preview-stats').textContent="2文字以上選択";document.getElementById('bonus-display').textContent="";return;}
+        const r=this.calc(this.sl), s=r.stats, b=["","","【コスト30%OFF】","【ステータス×1.2】","【ステータス×1.4・再出撃+40%】","【ステータス×1.6・再出撃+80%】"];
+        document.getElementById('preview-stats').textContent=`HP:${Math.floor(s.hp)} 攻:${Math.floor(s.damage)} 射:${Math.floor(s.range)} 速:${s.speed.toFixed(1)} Cost:${Math.floor(r.cost)} 再:${Math.floor(s.respawnTime/60)}s`;
+        document.getElementById('bonus-display').textContent=b[this.sl.length]||"";
+    }
+    calc(cs){
+        let s={...BASE_STATS}, cost=50, efs=[], bH=1, bD=1, bR=1, bC=1;
+        cs.forEach(c=>{
+            const d=KANJI_DB[c]; cost+=d.cost; if(d.effect)efs.push(d.effect);
+            if(d.stats){
+                if(d.stats.hp){s.hp*=d.stats.hp;bH*=d.stats.hp;}
+                if(d.stats.damage){s.damage*=d.stats.damage;bD*=d.stats.damage;}
+                if(d.stats.speed)s.speed*=d.stats.speed;
+                if(d.stats.range)s.range=Math.max(s.range,d.stats.range);
+                if(d.stats.cooldown)s.cooldown*=d.stats.cooldown;
+                if(d.stats.multiHit)s.multiHit=(s.multiHit||1)+d.stats.multiHit;
+                if(d.stats.aoe)s.aoe=d.stats.aoe;
+                if(d.stats.pierce)s.pierce=true;
+                if(d.stats.isFlying)s.isFlying=true;
+                if(d.stats.kbResist)s.kbResist=Math.max(s.kbResist||0, d.stats.kbResist);
+                if(d.stats.respawn){s.respawnTime*=d.stats.respawn;bR*=d.stats.respawn;}
+                if(d.stats.revive)s.revive=1;
+                if(d.stats.multiTarget)s.multiTarget=(s.multiTarget||1)+d.stats.multiTarget-1;
+                if(d.stats.costRate)bC*=d.stats.costRate;
+                if(d.stats.respawnRate)bR*=d.stats.respawnRate;
+            }
+        });
+        if(efs.includes('force_single')){s.aoe=0;s.multiHit=1;s.pierce=false;s.multiTarget=1;}
+        if(efs.includes('berserk'))s.range=40;
+        const cn=cs.length, sm=[1,1,1,1.2,1.4,1.6][cn], cm=[1,1,0.7,1.05,1.15,1.25][cn];
+        if(cn>=3)s.respawnTime*=[1,1,1,1.15,1.4,1.8][cn];
+        s.hp=BASE_STATS.hp*bH*sm; s.damage=BASE_STATS.damage*bD*sm; s.respawnTime=BASE_STATS.respawnTime*bR;
+        const pf=Math.sqrt((s.hp/BASE_STATS.hp)*(s.damage/BASE_STATS.damage));
+        let fc=cost*bC*cm*Math.pow(pf, 0.7); if(s.costRate)fc*=s.costRate; s.cost=Math.floor(fc);
+        let fr=s.respawnTime*(Math.max(0.5,1+(pf-1)*0.8)); if(s.respawnRate)fr*=s.respawnRate;
+        s.respawnTime=Math.max(30,Math.floor(fr));
+        return {stats:s,cost:s.cost,effects:efs,name:cs.join('')};
+    }
+    synthesize(){
+        if(this.sl.length<2){app.log("2~5文字必要");return;}
+        if(game.recipes.length>=game.maxRec){app.log("所持枠一杯");return;}
+        
+        const sortedIndices = [...this.slIdx].sort((a,b) => b - a);
+        sortedIndices.forEach(idx => {
+            game.inv.splice(idx, 1);
+        });
+
+        const c=this.calc(this.sl);
+        game.recipes.push({chars:[...this.sl],name:c.name,stats:c.stats,cost:c.cost,effects:c.effects,level:1});
+        this.clearSlots();
+    }
+}
+var game=new GameEngine(), lab=new LabSystem();
+var app = {
+    startGame:()=>{document.getElementById('overlay-screen').style.display='none';app.showLab();},
+    showLab:()=>{game.state='LAB';document.getElementById('game-container').className='layout-lab';document.getElementById('lab-screen').style.display='flex';document.getElementById('battle-ui').style.display='none';setTimeout(()=>game.resize(),50);setTimeout(()=>game.resize(),550);lab.renderInv();},
+    switchTab:(t)=>{
+        document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));document.querySelectorAll('.lab-content').forEach(c=>c.classList.remove('active'));
+        if(t==='craft'){document.querySelectorAll('.tab-btn')[0].classList.add('active');document.getElementById('tab-craft').classList.add('active');}
+        else if(t==='deck'){document.querySelectorAll('.tab-btn')[1].classList.add('active');document.getElementById('tab-deck').classList.add('active');lab.renDk();}
+        else{document.querySelectorAll('.tab-btn')[2].classList.add('active');document.getElementById('tab-upgrade').classList.add('active');lab.renUp();}
+    },
+    startBattle:()=>{
+        if(!game.deck.length){app.log("デッキ未編成");return;}
+        game.state='BATTLE';document.getElementById('game-container').className='layout-battle';document.getElementById('lab-screen').style.display='none';document.getElementById('battle-ui').style.display='flex';
+        document.getElementById('wave-display').textContent=game.stg;
+        setTimeout(()=>game.resize(),50);setTimeout(()=>game.resize(),550);
+        game.recalc();game.ink=50;game.fr=0;game.units=[];game.parts=[];game.efs=[];game.dCds=[0,0,0,0,0];game.bossSp=false;
+        game.base={p:1000,e:1000*(1+(game.stg-1)*0.2),max:1000*(1+(game.stg-1)*0.2)};
+        game.bLv=0; game.bCost=100; game.bossTimer=0;
+        app.genDkUI();app.updInk();app.updDkUI();app.updCasUI();
+    },
+    updDkUI:()=>{
+        const c=document.getElementById('unit-deck-container'); if(c.innerHTML===''){app.genDkUI();return;}
+        const cs=c.querySelectorAll('.unit-card');
+        game.deck.forEach((ri,i)=>{const cd=cs[i];if(!cd)return;const r=game.recipes[ri],ic=game.dCds[i]>0,ni=game.ink<r.cost;cd.style.opacity=(ic||ni)?0.6:1;cd.style.borderColor=(ic||ni)?'#555':'#0f0';cd.style.setProperty('--cd-pct',`${ic?(game.dCds[i]/r.stats.respawnTime*100):0}%`);});
+    },
+    genDkUI:()=>{const c=document.getElementById('unit-deck-container');c.innerHTML='';game.deck.forEach((ri,i)=>{const r=game.recipes[ri];if(!r)return;const d=document.createElement('div');d.className='unit-card';d.innerHTML=`<div class="unit-icon">${r.chars[0]}</div><div class="unit-cost">${r.cost}</div><div class="lvl">Lv${r.level||1}</div>`;d.onclick=()=>game.spwU(i);c.appendChild(d);});},
+    updInk:()=>{document.getElementById('ink-display').textContent=Math.floor(game.ink);document.getElementById('max-ink-display').textContent=(game.maxInk+(game.bLv*100));},
+    updCasUI:()=>{
+        const b=document.getElementById('btn-castle-up');
+        if(!b)return;
+        if(game.bLv>=10){
+            b.textContent="MAX"; b.disabled=true; b.classList.remove('btn-gold'); b.classList.add('btn-ink');
+        } else {
+            b.textContent=`城強化 Lv${game.bLv+1} (${game.bCost})`;
+            b.disabled=game.ink<game.bCost;
+            b.classList.toggle('opacity-50', game.ink<game.bCost);
+        }
+    },
+    upgCas:()=>{game.upgradeBase();},
+    res:(w)=>{
+        const o=document.getElementById('overlay-screen');o.style.display='flex';o.innerHTML='';
+        if(w){
+            const rs=[],ks=Object.keys(KANJI_DB);for(let i=0;i<5;i++){const c=ks[Math.floor(Math.random()*ks.length)];rs.push(c);game.inv.push(c);}
+            game.sp+=3;const ig=100+(game.stg*30);game.bokuju+=ig;game.base.p=game.base.max;
+            let h=`<h2 class="text-4xl text-yellow-400 font-bold mb-4">勝利！</h2><div class="mb-4 text-white"><p>SP +3</p><p>墨汁 +${ig}</p></div><p class="mb-2 text-gray-300">文字ゲット</p><div class="reward-grid">`;
+            rs.forEach(r=>{h+=`<div class="reward-card-small">${r}</div>`});
+            h+=`</div><button class="btn btn-primary text-xl px-6 py-2" onclick="app.nxt()">次へ</button>`;o.innerHTML=h;
+        }else{o.innerHTML=`<h2 class="text-4xl text-red-500 font-bold mb-4">敗北...</h2><p class="mb-4 text-white">Stage ${game.stg}</p><button class="btn btn-primary" onclick="location.reload()">再挑戦</button>`;}
+    },
+    nxt:()=>{game.stg++;game.decE();document.getElementById('overlay-screen').style.display='none';app.showLab();},
+    log:(m)=>{
+        const c=document.getElementById('game-log-container'),d=document.createElement('div');
+        d.className='game-log-msg';d.textContent=m;c.appendChild(d);
+        setTimeout(()=>{d.remove()},2500);
+    }
+};
+console.log("Lab init");lab.renderInv();
+</script>
+</body>
+</html>
